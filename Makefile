@@ -1,6 +1,6 @@
 CXX = g++
 OPT = -O3
-#OPT = -g
+OPT = -g
 WARN = -Wall
 CFLAGS = $(OPT) $(WARN) $(INC) $(LIB)
 
