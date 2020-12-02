@@ -2,27 +2,42 @@
 
 bool Advance_Cycle(std::ifstream& input)
 {
+	// do not advance cycle if ROB is empty and trace file is complete
 	if (rob.is_empty() && input.eof())
 		return false;
 	else
         Cycle++;
 		return true;
-}
+} 
 
 void FakeRetire()
 {
-	std::cout << "attempt retire " << rob.head << " " << rob.head % 1024 << std::endl;
+	if (rob.list.size() == 0)
+		return;
+
+	Instruction inst;
 
 	// Remove instructions from head of ROB
 	// so long as they're in WB state
-	while(rob.list[rob.head % 1024].valid && rob.list[rob.head % 1024].stage == WB)
+	while(rob.list[rob.head].valid && rob.list[rob.head].stage == WB)
 	{
+		// print instruction timing information
+		inst = rob.list[rob.head];
+		std::cout << inst.tag << " ";
+		std::cout << "fu{" << inst.type << "} ";
+		std::cout << "src{" << inst.src1 << "," << inst.src2 << "} ";
+		std::cout << "dst{" << inst.dest << "} ";
+		std::cout << "IF{" << inst.if_start << "," << inst.if_duration << "} ";
+		std::cout << "ID{" << inst.id_start << "," << inst.id_duration << "} ";
+		std::cout << "IS{" << inst.is_start << "," << inst.is_duration << "} ";
+		std::cout << "EX{" << inst.ex_start << "," << inst.ex_duration << "} ";
+		std::cout << "WB{" << inst.wb_start << "," << 1 << "}";
+		std::cout << std::endl;
+
+		// invalidate entry in rob and advance head pointer
 		rob.list[rob.head].valid = false;
 		rob.head++;
-		std::cout << "attempt retire " << rob.head << " " << rob.head % 1024 << std::endl;
 	}
-
-	std::cout << "done retiring " << std::endl;
 }
 
 void Execute()
@@ -33,15 +48,17 @@ void Execute()
 		// Move instructions that are finishing execution to writeback stage
 		if (inst->latency <= 1)
 		{	
-			// update ROB info
-			inst->stage = WB;
+			// advance to WB stage and update ROB
+			inst->stage++;
+			inst->wb_start = Cycle;
+			inst->ex_duration = Cycle - inst->ex_start;
 			rob.update_entry(*inst);
 			
 			// update register file
-			if (inst->dest != -1)
+			if (inst->dest != -1 && reg_file.at(inst->dest).tag == inst->tag)
 			{
-				reg_file[inst->dest].tag = -1;
-				reg_file[inst->dest].in_reg_file = true;
+				reg_file.at(inst->dest).tag = -1;
+				reg_file.at(inst->dest).in_reg_file = true;
 			}
 
 			// Wake up dependent instructions by broadcasting to scheduling queue
@@ -67,15 +84,14 @@ void Execute()
 		}
 		else
 		{
+			// if not finshing execution, simply execute one execution cycle
 			inst->latency--;
 			inst++;
 		}
 	}
-
-	std::cout << "done execute" << std::endl;
 }
 
-void Issue()
+void Issue(unsigned long N)
 {
 	// Create list of instructions with ready operands 
 	std::list<Instruction>::iterator inst = issue_list.begin();
@@ -97,41 +113,39 @@ void Issue()
 	std::vector<Instruction>::iterator rdy_inst = ready_list.begin();
 	while (issued <= N && rdy_inst != ready_list.end())
 	{
-		// remove instruction from issue_list
+		// remove instruction from issue list
 		remove_from_list(*rdy_inst, issue_list);
 
-		// move instruction from issue stage to execute stages
-		rdy_inst->stage = EX;
+		// move instruction from issue stage to execute stage
+		rdy_inst->stage++;
+		rdy_inst->ex_start = Cycle;
+		rdy_inst->is_duration = Cycle - rdy_inst->is_start;
 		rob.update_entry(*rdy_inst);
 
-		// push instruction to execute list 
+		// push ready instruction to execute list 
 		execute_list.push_back(*rdy_inst);
 
 		rdy_inst++;
 		issued++;
 	}
-	std::cout << "done issue" << std::endl;
 }
 
-void Dispatch()
+void Dispatch(unsigned long S)
 {
 	// Scan dispatch list in ascending order of tags
 	// move instructions in decode stage to the scheduling queue
 
-	std::cout << "start dispatch" << std::endl;
-
 	std::list<Instruction>::iterator inst = dispatch_list.begin();
     while (inst != dispatch_list.end()) 
 	{
-		std::cout << "TEST" << std::endl;
         if (inst->stage == ID && issue_list.size() < S) 
 		{
-			std::cout << "move inst to IS: " << inst->tag << std::endl;
-			fflush(stdout);
 			// move instruction to issue stage
-			inst->stage = IS;
-			std::cout << "done move inst to IS: " << inst->tag << std::endl;
-			// rename source operands using tomasulo's
+			inst->stage++;
+			inst->is_start = Cycle;
+			inst->id_duration = Cycle - inst->id_start;
+
+			// rename source operands using tomasulo'ss
 			if (inst->src1 == -1)
 			{
 				inst->src1_tag = -1;
@@ -139,8 +153,9 @@ void Dispatch()
 			}
 			else
 			{
-				inst->src1_tag = reg_file[inst->src1].tag;
-				inst->src1_rdy = reg_file[inst->src1].in_reg_file;
+				// getting register status from register file
+				inst->src1_tag = reg_file.at(inst->src1).tag;
+				inst->src1_rdy = reg_file.at(inst->src1).in_reg_file;
 			}
 			if (inst->src2 == -1)
 			{
@@ -149,17 +164,18 @@ void Dispatch()
 			}
 			else
 			{
-				inst->src2_tag = reg_file[inst->src2].tag;
-				inst->src2_rdy = reg_file[inst->src2].in_reg_file;
+				inst->src2_tag = reg_file.at(inst->src2).tag;
+				inst->src2_rdy = reg_file.at(inst->src2).in_reg_file;
 			}
+
 			// update instruction information in rob
 			rob.update_entry(*inst);
 
 			// update destination register state in register file
 			if (inst->dest != -1)
 			{
-				reg_file[inst->dest].tag = inst->tag;
-				reg_file[inst->dest].in_reg_file = false;
+				reg_file.at(inst->dest).tag = inst->tag;
+				reg_file.at(inst->dest).in_reg_file = false;
 			}
 
 			// add instruction to scheduling queue
@@ -173,33 +189,33 @@ void Dispatch()
 			// move instructions in fetch stage to decode stage
 			if (inst->stage == IF)
 			{
-				inst->stage = ID;
+				inst->stage++;
+				inst->id_start = Cycle;
+				inst->if_duration = Cycle - inst->if_start;
+				rob.update_entry(*inst);
 			}
 			inst++;
 		}
+		
     }
-	std::cout << "done dispatch" << std::endl;
 }
 
-void Fetch(std::ifstream& input)
+void Fetch(std::ifstream& input, unsigned long N)
 {
 	int type, dest, src1, src2;
 	long unsigned int num_fetched = 0;
     std::string line, hex_address;
 
-	if (input.eof())
-		return;
+	if (input.eof()) {return;}
 
-	// Fetch instructions while not at the end of trace file
-	// Dispath queue is not full
-	// and fetch bandwidth not yet exceeded
-	while (getline(input, line) && dispatch_list.size() <= 2*N && num_fetched <= N)
+	// Fetch instructions while the following conditions are true:
+		// not yet at the end of trace file
+		// Dispatch queue is not full
+		// and fetch bandwidth not yet exceeded
+	while (dispatch_list.size() < 2*N && num_fetched < N && getline(input, line))
 	{
-		// ignore empty line
-		if (line.empty()) 
-		{
-			continue;
-		}
+		// ignore empty line just in case
+		if (line.empty()) {continue;}
 
 		// read instruction
 		std::istringstream ss_line(line);
@@ -208,12 +224,13 @@ void Fetch(std::ifstream& input)
 		// Create instruction object
 		Instruction inst;
 		inst.valid = true;
-		inst.stage = IF;
+		inst.stage = 0;
 		inst.tag = PC;
 		inst.type = type;
 		inst.dest = dest;
 		inst.src1 = src1;
 		inst.src2 = src2;
+		inst.if_start = Cycle;
 		
 		// Set latency based on instruction type
 		switch(inst.type) {
@@ -235,6 +252,4 @@ void Fetch(std::ifstream& input)
 		PC++;		
 		num_fetched++;
 	}
-
-	std::cout << "done fetching" << std::endl;
 }
